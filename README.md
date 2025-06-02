@@ -45,8 +45,24 @@ psycopg2
 
 # 🚀 Instalación
 
+1.
+
 ```
 git clone https://github.com/JoseVelasco646/torres
 ```
 
 cd torres
+
+## 2. Crear Entorno virtual
+
+```
+python -m venv venv
+linux : source venv/bin/activate
+windows: venv\Scripts\activate
+```
+
+## 3. Instalar dependencias.
+
+```
+pip install -r requirements.txt
+```
