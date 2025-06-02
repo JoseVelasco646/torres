@@ -2,10 +2,10 @@ import nest_asyncio
 nest_asyncio.apply()
 
 import asyncio
+import unicodedata
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from supabase import create_client, Client
-import unicodedata
 
 SUPABASE_URL = "https://wkimchzmykvcofvprfat.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndraW1jaHpteWt2Y29mdnByZmF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDgwMjQ4ODgsImV4cCI6MjA2MzYwMDg4OH0.O84iGohEv1kgLZFoUaQun-SoFGO2XaDWHYJCsudYArQ"
@@ -24,7 +24,6 @@ async def listar_torres(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mensaje += f"- {torre['nombre']} (`{torre['id_torre']}`)\n"
 
     await update.message.reply_markdown(mensaje)
-
 
 
 def normalizar(texto):
@@ -94,49 +93,53 @@ async def revisar_alertas(app):
             .limit(100)\
             .execute()
 
-        if res.data:
-            estados_por_torre = {}
+        if not res.data:
+            print("No hay datos en diagnostico_torre")
+            await asyncio.sleep(5)
+            continue
 
-            for data in res.data:
-                torre_id = data.get("id_torre")
-                if torre_id not in estados_por_torre:
-                    estados_por_torre[torre_id] = data
+        estados_por_torre = {}
 
-            for torre_id, data in estados_por_torre.items():
-                estado_original = data.get("estado_general", "")
-                estado_general = normalizar(estado_original)
+        for data in res.data:
+            torre_id = data.get("id_torre")
+            if torre_id not in estados_por_torre:
+                estados_por_torre[torre_id] = data
 
-                if not torre_id or estado_general not in ("alerta", "critico"):
-                    if torre_id and estado_general == "normal":
-                        alertas_enviadas.discard((torre_id, "alerta"))
-                        alertas_enviadas.discard((torre_id, "critico"))
-                    continue
+        for torre_id, data in estados_por_torre.items():
+            estado_original = data.get("estado_general", "")
+            estado_general = normalizar(estado_original)
 
-                if (torre_id, estado_general) in alertas_enviadas:
-                    continue
+            print(f"📡 Torre {torre_id}: estado_general={estado_general}")
 
-                nombre_torre = "desconocida"
-                res_torre = supabase.table("torres").select("nombre").eq("id_torre", torre_id).execute()
-                if res_torre.data:
-                    nombre_torre = res_torre.data[0]["nombre"]
+            if not torre_id or estado_general != "critico":
+                alertas_enviadas.discard((torre_id, "critico"))
+                continue
 
-                mensaje = (
-                    f"🚨 *Alerta en torre {nombre_torre}*\n\n"
-                    f"📊 *Estado general:* *{estado_original.upper()}*"
+            if (torre_id, "critico") in alertas_enviadas:
+                continue
+
+            nombre_torre = "desconocida"
+            res_torre = supabase.table("torres").select("nombre").eq("id_torre", torre_id).execute()
+            if res_torre.data:
+                nombre_torre = res_torre.data[0]["nombre"]
+
+            mensaje = (
+                f"🚨 *Alerta crítica en torre {nombre_torre}*\n\n"
+                f"📊 *Estado general:* *{estado_original.upper()}*"
+            )
+
+            try:
+                await app.bot.send_message(
+                    chat_id=CHAT_ID_ALERTAS,
+                    text=mensaje,
+                    parse_mode="Markdown"
                 )
+                print(f"✅ Alerta enviada: Torre {torre_id} - Tipo: critico")
+                alertas_enviadas.add((torre_id, "critico"))
+            except Exception as e:
+                print(f"❌ Error al enviar alerta: {e}")
 
-                try:
-                    await app.bot.send_message(
-                        chat_id=CHAT_ID_ALERTAS,
-                        text=mensaje,
-                        parse_mode="Markdown"
-                    )
-                    print(f"✅ Alerta enviada: Torre {torre_id} - Estado: {estado_original}")
-                    alertas_enviadas.add((torre_id, estado_general))
-                except Exception as e:
-                    print(f"❌ Error al enviar alerta: {e}")
-
-        await asyncio.sleep(60)
+        await asyncio.sleep(5)
 
 
 

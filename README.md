@@ -66,3 +66,55 @@ windows: venv\Scripts\activate
 ```
 pip install -r requirements.txt
 ```
+
+## 4. Instalar Docker
+
+Para instalar docker nos dirigimos a esta pagina https://www.docker.com/.  
+Creamos nuestro contenedor de postgres usando docker con el siguiente comando:
+
+```docker run --name postgres-container \
+  -e POSTGRES_USER=usuario \
+  -e POSTGRES_PASSWORD=contraseña \
+  -e POSTGRES_DB=midb \
+  -p 5432:5432 \
+```
+
+## 5. Iniciar Programa.
+
+Para iniciar el programa se debe de ejecutar primero el archivo crear_torre.py
+`streamlit run crear_torre.py    `  
+Despues ejecutar el bot de telegram.  
+`python bot.py`
+
+## Inicio.
+
+![Home](./images/Home.png)
+Crear torre.
+
+## Visualizar torres
+
+![Visualizar torres](./images/Torres.png)
+
+## Mapa de las ubicaciones de las torres.
+
+![Mapaa Torre](./images/Mapa.png)
+
+## Visualizar Datos de cada torre.
+
+![Visualizar datos](./images/Visualizar.png)
+
+## Comparar datos de torres.
+
+![Comparar datos](./images/Comparar.png)
+
+## Reportes de torres.
+
+![Reportes](./images/Descargar.png)
+
+## Importar datos de excel.
+
+![Datos excel](./images/excel.png)
+
+## Estado tecnico de torre.
+
+![Estado general ](./images/Estado.png)

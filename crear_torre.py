@@ -14,7 +14,11 @@ from fpdf import FPDF
 from io import BytesIO
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
+import sqlite3
+import streamlit as st
+import uuid
+import psycopg2
+nuevo_uuid = str(uuid.uuid4()) 
 
 
 
@@ -26,6 +30,32 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 st.set_page_config(page_title="Simulador Torres Meteorológicas", layout="wide")
 
 
+def conectar_postgres():
+    conn = psycopg2.connect(
+        host="localhost",        
+        port=5432,               
+        database="postgres",
+        user="postgres",        
+        password="password"
+    )
+    return conn
+
+def crear_tabla_postgres():
+    conn = conectar_postgres()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS torres (
+        id_torre SERIAL PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        lat FLOAT8 NOT NULL,
+        lon FLOAT8 NOT NULL,
+        estado TEXT NOT NULL,
+        usuario_asignado TEXT
+    );
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 def mostrar_mapa_torres():
     # Obtener torres desde la base de datos
@@ -58,21 +88,56 @@ def mostrar_mapa_torres():
     st.subheader("Mapa de Torres Meteorológicas")
     st_folium(mapa, width=700, height=500)
 
+def conectar_db():
+    conn = sqlite3.connect('torres.db')
+    cursor = conn.cursor()
+    # Crear tabla torres si no existe
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS torres (
+            id_torre INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            lat REAL NOT NULL,
+            lon REAL NOT NULL,
+            estado TEXT NOT NULL,
+            usuario_asignado TEXT
+        )
+    ''')
+
+    # Crear tabla datos_meteorologicos si no existe
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS datos_meteorologicos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_torre INTEGER NOT NULL,
+            temperatura REAL,
+            humedad_relativa REAL,
+            presion_atmosferica REAL,
+            velocidad_viento REAL,
+            direccion_viento INTEGER,
+            precipitacion REAL,
+            radiacion_solar REAL,
+            indice_uv INTEGER,
+            fecha TEXT,
+            FOREIGN KEY (id_torre) REFERENCES torres(id_torre)
+        )
+    ''')
+
+    conn.commit()
+    return conn, cursor
+
 def crear_torre():
     st.header("Crear o Editar Torre")
 
     modo_edicion = st.session_state.get("modo_edicion", False)
     torre_editando = st.session_state.get("torre_editando", None)
 
-    
     lat_baja_california = 31.8667
     lon_baja_california = -116.6000
 
     with st.form("form_torre"):
         if modo_edicion and torre_editando:
             nombre = st.text_input("Nombre de la Torre", value=torre_editando["nombre"])
-            lat = st.text_input("Latitud", value=str(torre_editando["ubicacion"].get("lat", lat_baja_california)))
-            lon = st.text_input("Longitud", value=str(torre_editando["ubicacion"].get("lon", lon_baja_california)))
+            lat = st.text_input("Latitud", value=str(torre_editando["lat"]))
+            lon = st.text_input("Longitud", value=str(torre_editando["lon"]))
             estado = st.selectbox("Estado", ["Activa", "Inactiva", "Falla", "Mantenimiento"],
                                   index=["Activa", "Inactiva", "Falla", "Mantenimiento"].index(torre_editando["estado"]))
         else:
@@ -95,31 +160,86 @@ def crear_torre():
             st.error("Latitud y longitud deben ser números válidos.")
             return
 
-        ubicacion = {"lat": lat_float, "lon": lon_float}
-        data = {
-            "nombre": nombre,
-            "ubicacion": ubicacion,
-            "estado": estado,
-        }
-
+        # Guardar en SQLite
+        conn_sqlite, cursor_sqlite = conectar_db()
         if modo_edicion and torre_editando:
-            supabase.table("torres").update(data).eq("id_torre", torre_editando["id_torre"]).execute()
-            st.success("Torre actualizada correctamente.")
+            cursor_sqlite.execute('''
+                UPDATE torres SET nombre=?, lat=?, lon=?, estado=? WHERE id_torre=?
+            ''', (nombre, lat_float, lon_float, estado, torre_editando["id_torre"]))
+            conn_sqlite.commit()
+        else:
+            cursor_sqlite.execute('''
+                INSERT INTO torres (nombre, lat, lon, estado, usuario_asignado)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (nombre, lat_float, lon_float, estado, None))
+            conn_sqlite.commit()
+            sqlite_id = cursor_sqlite.lastrowid
+        conn_sqlite.close()
+
+        # Guardar en PostgreSQL (Docker)
+        try:
+            conn_pg = conectar_postgres()
+            cursor_pg = conn_pg.cursor()
+
+            if modo_edicion and torre_editando:
+                cursor_pg.execute('''
+                    UPDATE torres SET nombre=%s, lat=%s, lon=%s, estado=%s WHERE id_torre=%s
+                ''', (nombre, lat_float, lon_float, estado, torre_editando["id_torre"]))
+            else:
+                cursor_pg.execute('''
+                    INSERT INTO torres (nombre, lat, lon, estado, usuario_asignado)
+                    VALUES (%s, %s, %s, %s, %s) RETURNING id_torre
+                ''', (nombre, lat_float, lon_float, estado, None))
+                postgres_id = cursor_pg.fetchone()[0]
+
+            conn_pg.commit()
+            cursor_pg.close()
+            conn_pg.close()
+        except Exception as e:
+            st.error(f"Error guardando en PostgreSQL: {e}")
+            return
+
+        # Guardar en Supabase
+        if modo_edicion and torre_editando:
+            supabase.table("torres").update({
+                "nombre": nombre,
+                "ubicacion": {"lat": lat_float, "lon": lon_float},
+                "estado": estado
+            }).eq("id_torre", torre_editando["id_torre"]).execute()
+            st.success("Torre actualizada correctamente en todas las bases.")
             st.session_state["modo_edicion"] = False
             st.session_state["torre_editando"] = None
         else:
-            data["usuario_asignado"] = None
-            response = supabase.table("torres").insert(data).execute()
-            if response.data:
-                st.success("Torre creada correctamente.")
-                nueva_torre = response.data[0]
-                id_nueva_torre = nueva_torre["id_torre"]
-                iniciar_simulacion(id_nueva_torre)
-            else:
-                st.error("Error al crear torre.")
+            supabase.table("torres").insert({
+                "nombre": nombre,
+                "ubicacion": {"lat": lat_float, "lon": lon_float},
+                "estado": estado
+            }).execute()
+            st.success("Torre creada correctamente en todas las bases.")
+            iniciar_simulacion(sqlite_id)  
 
+    crear_tabla_postgres()
     mostrar_torres()
     mostrar_mapa_torres()
+
+def insertar_simulados():
+    datos = simular_datos()
+    conn = conectar_postgres()
+    cursor = conn.cursor()
+
+    for dato in datos:
+        cursor.execute(
+            """
+            INSERT INTO torres (nombre, lat, lon, estado)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (dato["nombre"], dato["lat"], dato["lon"], dato["estado"])
+        )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 
 
 # mostrar torres 
@@ -222,6 +342,14 @@ def mostrar_estado_tecnico():
 # simular datos
 def simular_datos(id_torre, stop_event):
     contador = 1
+    
+    # Conexión SQLite 
+    conn_sqlite, cursor_sqlite = conectar_db()
+    
+    # Conexión docker
+    conn_pg = conectar_postgres()
+    cursor_pg = conn_pg.cursor()
+    
     while not stop_event.is_set():
         data = {
             "id_torre": id_torre,
@@ -235,13 +363,50 @@ def simular_datos(id_torre, stop_event):
             "indice_uv": random.randint(0, 11),
             "fecha": datetime.utcnow().isoformat()
         }
-        supabase.table("datos_meteorologicos").insert(data).execute()
-        time.sleep(60)  
 
-        if contador % 5 == 0: 
+        # Insertar en SQLite
+        cursor_sqlite.execute('''
+            INSERT INTO datos_meteorologicos (
+                id_torre, temperatura, humedad_relativa, presion_atmosferica,
+                velocidad_viento, direccion_viento, precipitacion,
+                radiacion_solar, indice_uv, fecha
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data["id_torre"], data["temperatura"], data["humedad_relativa"], data["presion_atmosferica"],
+            data["velocidad_viento"], data["direccion_viento"], data["precipitacion"],
+            data["radiacion_solar"], data["indice_uv"], data["fecha"]
+        ))
+        conn_sqlite.commit()
+
+        # Insertar en PostgreSQL
+        cursor_pg.execute('''
+            INSERT INTO datos_meteorologicos (
+                id_torre, temperatura, humedad_relativa, presion_atmosferica,
+                velocidad_viento, direccion_viento, precipitacion,
+                radiacion_solar, indice_uv, fecha
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (
+            data["id_torre"], data["temperatura"], data["humedad_relativa"], data["presion_atmosferica"],
+            data["velocidad_viento"], data["direccion_viento"], data["precipitacion"],
+            data["radiacion_solar"], data["indice_uv"], data["fecha"]
+        ))
+        conn_pg.commit()
+
+        # Insertar en Supabase
+        supabase.table("datos_meteorologicos").insert(data).execute()
+
+        time.sleep(60)
+
+        if contador % 5 == 0:
             simular_estado_tecnico(id_torre)
         contador += 1
-       
+
+    # Cerrar conexiones
+    cursor_sqlite.close()
+    conn_sqlite.close()
+    cursor_pg.close()
+    conn_pg.close()
+
 
 
 
@@ -256,7 +421,7 @@ def iniciar_simulacion(id_torre):
     hilo = threading.Thread(target=simular_datos, args=(id_torre, stop_event), daemon=True)
     hilo.start()
     stop_threads[id_torre] = (hilo, stop_event)
-    st.success("Simulación iniciada.")
+    
 
 def detener_simulacion(id_torre):
     if id_torre in stop_threads:
@@ -294,10 +459,10 @@ def mostrar_datos_realtime():
 
     torre_nombre = st.selectbox("Selecciona una torre:", list(torres.keys()))
     id_torre = torres[torre_nombre]
+    iniciar_simulacion(id_torre)
     df = obtener_datos(id_torre)
 
     if df.empty:
-        st.warning("No hay datos aún.")
         return
 
     
@@ -565,3 +730,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
